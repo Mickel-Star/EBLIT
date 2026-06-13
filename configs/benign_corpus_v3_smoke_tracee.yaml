@@ -1,0 +1,233 @@
+dataset: benign_corpus_v3
+run_id: run_smoke_tracee
+split: smoke
+phase: second_stage_tracee_collection_smoke
+base_url: http://127.0.0.1:5000
+duration_seconds: 300
+random_seed: 20260501
+output_dir: data/benign_corpus_v3/smoke/run_smoke_tracee
+workload_model: multi_actor_arrival_rate
+request_timeout_seconds: 5
+
+collection:
+  tracee_enabled: true
+  tracee_image: aquasec/tracee:0.24.1
+  compose_file: deploy/docker-compose.yml
+  skip_compose_up: false
+  trace_log_name: trace.log
+  tracee_runtime_log_name: tracee_runtime.log
+  readiness_timeout_seconds: 60
+  tracee_startup_timeout_seconds: 120
+  tracee_settle_seconds: 3
+  tracee_flush_seconds: 3
+  tracee_output_format: json
+  tracee_events: sched_process_exec,execve,openat,read,write,close,socket,bind,listen,accept,accept4,connect,getpeername,getsockname,sendto,recvfrom,fork,clone,vfork,mmap,security_socket_connect,security_socket_accept
+
+auth:
+  user_username: alice
+  admin_username: bob
+  password: password
+  real_session_cookie: false
+  bearer_token_session: true
+  driver_state_machine: true
+
+actors:
+  foreground_user:
+    enabled: true
+    virtual_users: 3
+    arrival_rate_per_min: 30
+    start_jitter_seconds: 10
+    think_time:
+      distribution: uniform
+      min_seconds: 1
+      max_seconds: 5
+
+  readonly_user:
+    enabled: true
+    virtual_users: 3
+    arrival_rate_per_min: 45
+    start_jitter_seconds: 10
+    think_time:
+      distribution: uniform
+      min_seconds: 1
+      max_seconds: 6
+
+  admin_user:
+    enabled: true
+    virtual_users: 1
+    arrival_rate_per_min: 6
+    start_jitter_seconds: 15
+    think_time:
+      distribution: uniform
+      min_seconds: 4
+      max_seconds: 12
+
+  background_worker:
+    enabled: true
+    virtual_users: 1
+    arrival_rate_per_min: 3
+    start_jitter_seconds: 20
+    think_time:
+      distribution: lognormal
+      mu: 1.2
+      sigma: 0.45
+      min_seconds: 3
+      max_seconds: 18
+
+  health_checker:
+    enabled: true
+    virtual_users: 1
+    arrival_rate_per_min: 4
+    start_jitter_seconds: 10
+    think_time:
+      distribution: uniform
+      min_seconds: 3
+      max_seconds: 10
+
+  burst_retry_user:
+    enabled: false
+    virtual_users: 2
+    arrival_rate_per_min: 60
+    start_jitter_seconds: 5
+    think_time:
+      distribution: uniform
+      min_seconds: 0.5
+      max_seconds: 2
+
+phases:
+  - name: low_load_mixed
+    duration_seconds: 60
+    actors:
+      foreground_user:
+        arrival_rate_per_min: 8
+      readonly_user:
+        arrival_rate_per_min: 10
+  - name: normal_business_mixed
+    duration_seconds: 120
+  - name: burst_retry_mixed
+    duration_seconds: 60
+    actors:
+      burst_retry_user:
+        enabled: true
+  - name: report_background_mixed
+    duration_seconds: 60
+
+endpoints:
+  health:
+    method: GET
+    path: /health
+    real: true
+
+  static:
+    method: GET
+    path: /
+    real: true
+
+  readiness:
+    method: GET
+    path: /health
+    real: false
+    fallback_for: readiness/liveness endpoint
+    fallback_reason: demo app exposes /health but no separate readiness or liveness route
+
+  login:
+    method: POST
+    path: /api/login
+    real: true
+
+  logout:
+    method: POST
+    path: /api/logout
+    real: true
+
+  session_read:
+    method: GET
+    path: /api/me
+    real: true
+
+  catalog:
+    method: GET
+    path: /api/items
+    real: true
+
+  search:
+    method: GET
+    path: /api/search
+    real: true
+
+  item_detail:
+    method: GET
+    path: /api/items
+    real: false
+    fallback_for: /api/items/{item_id}
+    fallback_reason: demo app has only a catalog list endpoint, so driver selects an item from the list response
+
+  order_checkout:
+    method: POST
+    path: /api/order
+    real: true
+
+  order_status:
+    method: GET
+    path: /api/order/{order_id}
+    real: true
+
+  order_read:
+    method: GET
+    path: /api/me
+    real: false
+    fallback_for: readonly order history endpoint
+    fallback_reason: demo app exposes recent orders through /api/me for authenticated users
+
+  admin_login:
+    method: POST
+    path: /api/login
+    real: true
+    note: bob is initialized as admin in deploy/vuln_app/app.py
+
+  admin_audit:
+    method: GET
+    path: /api/admin/audit
+    real: true
+
+  admin_inspection:
+    method: GET
+    path: /api/search
+    real: true
+
+  report_export:
+    method: GET
+    path: /api/report/export
+    real: true
+
+  report_status:
+    method: GET
+    path: /api/report/export
+    real: false
+    fallback_for: report status read endpoint
+    fallback_reason: demo app has report export but no separate report status route
+
+  cache_warmup:
+    method: GET
+    path: /api/items
+    real: true
+
+  periodic_sync:
+    method: GET
+    path: /api/search
+    real: true
+
+  legal_backup_read:
+    method: GET
+    path: /api/report/export
+    real: false
+    fallback_for: legal backup-like read endpoint
+    fallback_reason: demo app has no backup API, so read-only aggregate export is used as the legal near-miss behavior
+
+  metrics_push:
+    method: DRIVER
+    path: ""
+    driver_level: true
+    real: false
+    fallback_for: metrics push or legal long-connection endpoint
+    fallback_reason: demo app has no metrics ingestion or websocket route, so this is recorded as a driver-level benign action

@@ -1,0 +1,24 @@
+dataset: benign_corpus_v3
+window_seconds: 30
+time_bin_seconds: 2
+random_seed: 20260501
+
+splits:
+  train:
+    sampling_policy:
+      active: 1.0
+      burst: 1.0
+      low_activity: 0.5
+      idle: 0.1
+      empty: 0.0
+  calibration:
+    keep_all_windows: true
+  holdout:
+    keep_all_windows: true
+
+sampling:
+  min_train_windows: 100
+  max_idle_fraction_in_sampled_train: 0.10
+  max_empty_fraction_in_sampled_train: 0.00
+  stratified_by_run: true
+  stratified_by_activity_level: true

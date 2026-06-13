@@ -1,0 +1,6 @@
+- [x] `log_parser.py` 的 `_parse_json_line` 对 `container_id`/`container_image`/`container_name` 执行两级查找（顶层 → `container` 嵌套对象），且仅在对应 key 未设置时回退
+- [x] `log_parser.py` 的 `_parse_json_line` 提取 `threadEntityId`/`processEntityId`/`parentEntityId` 到 `structured_data`，键名为 `thread_entity_id`/`process_entity_id`/`parent_entity_id`
+- [x] `provenance_model.py` 的 `parse_log_event` 将 `process_entity_id` 有条件地写入 `proc_meta`
+- [x] `provenance_model.py` 的 fork/clone 分支将 `process_entity_id` 有条件地写入 `obj_meta`
+- [x] `python -m compileall src/process/log_parser.py src/process/provenance_model.py` 通过
+- [x] 用实际 trace.log 数据验证 `container_image`、`container_name`、`process_entity_id` 被正确提取

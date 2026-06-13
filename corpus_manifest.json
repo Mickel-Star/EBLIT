@@ -1,0 +1,88 @@
+{
+  "corpus_dir": ".",
+  "created_at": "2026-05-26T06:13:22Z",
+  "dataset": "benign_corpus_v3",
+  "errors": [],
+  "files": {
+    "corpus_summary": "corpus_summary.json",
+    "full_window_index": "full_window_index.jsonl",
+    "sampled_train_windows": "sampled_train_windows.jsonl"
+  },
+  "policy_notes": [
+    "Only train split is sampled.",
+    "Calibration and holdout preserve all windows.",
+    "Attack data is not included."
+  ],
+  "random_seed": 20260501,
+  "sampling": {
+    "max_empty_fraction_in_sampled_train": 0.0,
+    "max_idle_fraction_in_sampled_train": 0.1,
+    "min_train_windows": 100,
+    "stratified_by_activity_level": true,
+    "stratified_by_run": true
+  },
+  "sampling_config": "configs/benign_manifest_v3.yaml",
+  "sampling_policy_version": "benign_manifest_v3_default",
+  "splits": {
+    "calibration": {
+      "activity_level_counts_full": {
+        "active": 0,
+        "burst": 0,
+        "empty": 0,
+        "idle": 0,
+        "low_activity": 0
+      },
+      "full_window_count": 0,
+      "keep_all_windows": true,
+      "runs": []
+    },
+    "holdout": {
+      "activity_level_counts_full": {
+        "active": 0,
+        "burst": 0,
+        "empty": 0,
+        "idle": 0,
+        "low_activity": 0
+      },
+      "full_window_count": 0,
+      "keep_all_windows": true,
+      "runs": []
+    },
+    "train": {
+      "activity_level_counts_full": {
+        "active": 0,
+        "burst": 0,
+        "empty": 0,
+        "idle": 0,
+        "low_activity": 0
+      },
+      "activity_level_counts_sampled": {
+        "active": 0,
+        "burst": 0,
+        "empty": 0,
+        "idle": 0,
+        "low_activity": 0
+      },
+      "full_window_count": 0,
+      "keep_all_windows": false,
+      "runs": [],
+      "sampled_window_count": 0,
+      "sampling_policy": {
+        "active": 1.0,
+        "burst": 1.0,
+        "empty": 0.0,
+        "idle": 0.1,
+        "low_activity": 0.5
+      }
+    }
+  },
+  "time_bin_seconds": 2,
+  "version": "v3",
+  "warnings": [
+    "sampled_train_below_min_train_windows:0<100",
+    "split_dir_missing:calibration",
+    "split_dir_missing:holdout",
+    "split_dir_missing:train"
+  ],
+  "window_seconds": 30
+}

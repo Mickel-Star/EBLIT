@@ -1,0 +1,15 @@
+# 向量处理和嵌入
+sentence-transformers>=2.2.2
+gensim>=4.4.0
+numpy>=1.24.0
+
+# 向量数据库
+chromadb>=0.4.15
+duckdb>=0.8.1
+
+# 数据处理
+pandas>=1.5.3
+
+# 工具库
+tqdm>=4.65.0
+python-dateutil>=2.8.2

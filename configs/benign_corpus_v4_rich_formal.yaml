@@ -1,0 +1,133 @@
+{
+  "schema_version": 4,
+  "dataset": "benign_corpus_v4_rich_formal",
+  "corpus_dir": "data/benign_corpus_v4_rich_formal",
+  "run_id": "run_a",
+  "split": "train",
+  "duration_seconds": 900,
+  "window_seconds": 30,
+  "time_bin_seconds": 2,
+  "windows_dir_name": "windows",
+  "compose_file": "deploy/docker-compose.yml",
+  "compose_profile": "benign-rich",
+  "host_ready_url": "http://127.0.0.1:5002/ready",
+  "client_base_url": "http://api-rich:5000",
+  "metrics_url": "http://metrics-sink-rich:9100/metrics",
+  "docker_network": "drsec-net",
+  "client_image": "deploy-vuln-app:latest",
+  "client_interval_seconds": 0.35,
+  "rich_host_port": 5002,
+  "readiness_timeout_seconds": 90,
+  "tracee_settle_seconds": 4,
+  "tracee_flush_seconds": 5,
+  "tracee_runtime_stderr_max_bytes": 10000000,
+  "tracee_image": "aquasec/tracee:0.24.1",
+  "tracee_events": [
+    "sched_process_exec",
+    "execve",
+    "openat",
+    "read",
+    "write",
+    "close",
+    "connect",
+    "accept",
+    "accept4",
+    "sendto",
+    "recvfrom",
+    "fork",
+    "clone",
+    "vfork",
+    "mmap",
+    "security_socket_connect",
+    "security_socket_accept"
+  ],
+  "actors": [
+    {"role": "foreground_user", "replicas": 2},
+    {"role": "readonly_user", "replicas": 2},
+    {"role": "admin_user", "replicas": 1},
+    {"role": "background_worker", "replicas": 2},
+    {"role": "health_checker", "replicas": 1},
+    {"role": "burst_retry_user", "replicas": 2}
+  ],
+  "expected_actors": [
+    "foreground_user",
+    "readonly_user",
+    "admin_user",
+    "background_worker",
+    "health_checker",
+    "burst_retry_user"
+  ],
+  "expected_actions": [
+    "login",
+    "admin_login",
+    "logout",
+    "session_read",
+    "catalog",
+    "search",
+    "item_detail",
+    "order_checkout",
+    "order_status",
+    "order_read",
+    "admin_audit",
+    "admin_inspection",
+    "report_status",
+    "health_check",
+    "static_read",
+    "readiness_check",
+    "cache_warmup",
+    "report_export",
+    "periodic_sync",
+    "legal_backup_read",
+    "metrics_push"
+  ],
+  "validation_thresholds": {
+    "min_windows": 2,
+    "min_nodes": 60,
+    "min_edges": 120,
+    "min_process_nodes": 8,
+    "min_file_nodes": 20,
+    "min_net_nodes": 5,
+    "min_event_types": 6,
+    "min_median_nodes": 20,
+    "min_median_edges": 40,
+    "min_median_process_nodes": 4
+  },
+  "runs": {
+    "run_a": {
+      "split": "train",
+      "duration_seconds": 900,
+      "source_profile": "rich_train_mixed_a"
+    },
+    "run_b": {
+      "split": "train",
+      "duration_seconds": 900,
+      "source_profile": "rich_train_mixed_b",
+      "actors": [
+        {"role": "foreground_user", "replicas": 3},
+        {"role": "readonly_user", "replicas": 2},
+        {"role": "admin_user", "replicas": 1},
+        {"role": "background_worker", "replicas": 2},
+        {"role": "health_checker", "replicas": 1},
+        {"role": "burst_retry_user", "replicas": 1}
+      ]
+    },
+    "run_c": {
+      "split": "calibration",
+      "duration_seconds": 450,
+      "source_profile": "rich_calibration_mixed"
+    },
+    "run_d": {
+      "split": "holdout",
+      "duration_seconds": 600,
+      "source_profile": "rich_holdout_near_miss",
+      "actors": [
+        {"role": "foreground_user", "replicas": 1},
+        {"role": "readonly_user", "replicas": 2},
+        {"role": "admin_user", "replicas": 1},
+        {"role": "background_worker", "replicas": 3},
+        {"role": "health_checker", "replicas": 1},
+        {"role": "burst_retry_user", "replicas": 1}
+      ]
+    }
+  }
+}

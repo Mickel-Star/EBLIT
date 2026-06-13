@@ -1,0 +1,200 @@
+services:
+  vuln-app:
+    image: deploy-vuln-app:latest
+    build:
+      context: ./vuln_app
+      dockerfile: Dockerfile
+    container_name: drsec-target
+    ports:
+      - "127.0.0.1:5000:5000"
+    volumes:
+      - ./vuln_app/app.py:/app/app.py:ro
+      - drsec-app-data:/app/data
+    networks:
+      - drsec-net
+
+  benign-client:
+    image: curlimages/curl:8.6.0
+    container_name: drsec-benign-client
+    profiles: ["benign"]
+    depends_on:
+      - vuln-app
+    command:
+      - sh
+      - -lc
+      - "for i in $(seq 1 120); do TOKEN=$(curl -s -H 'Content-Type: application/json' -d '{\"username\":\"alice\",\"password\":\"password\"}' 'http://vuln-app:5000/api/login' | sed -n 's/.*\"token\":\"\\([^\"]*\\)\".*/\\1/p'); curl -s 'http://vuln-app:5000/health' >/dev/null; curl -s 'http://vuln-app:5000/api/items' >/dev/null; curl -s 'http://vuln-app:5000/api/search?q=sku' >/dev/null; curl -s -H 'Content-Type: application/json' -d '{\"customer\":\"alice\",\"item\":\"sku-001\",\"quantity\":1}' 'http://vuln-app:5000/api/order' >/dev/null; if [ -n \"$$TOKEN\" ]; then curl -s -H \"Authorization: Bearer $$TOKEN\" 'http://vuln-app:5000/api/me' >/dev/null; curl -s -X POST -H \"Authorization: Bearer $$TOKEN\" 'http://vuln-app:5000/api/logout' >/dev/null; fi; sleep 0.2; done; sleep 5"
+    networks:
+      - drsec-net
+
+  api-rich:
+    image: deploy-vuln-app:latest
+    build:
+      context: ./vuln_app
+      dockerfile: Dockerfile
+    container_name: drsec-api-rich
+    profiles: ["benign-rich"]
+    environment:
+      DRSEC_DB_PATH: /app/data/app.db
+      DRSEC_RICH_DATA_DIR: /app/data/rich
+    command:
+      - gunicorn
+      - -w
+      - "6"
+      - -b
+      - 0.0.0.0:5000
+      - app:app
+    ports:
+      - "127.0.0.1:${DRSEC_RICH_HOST_PORT:-5002}:5000"
+    volumes:
+      - ${DRSEC_RICH_APP_DATA:-../data/benign_corpus_v4/service_data}:/app/data
+    networks:
+      - drsec-net
+
+  worker-rich:
+    image: deploy-vuln-app:latest
+    container_name: drsec-worker-rich
+    profiles: ["benign-rich"]
+    depends_on:
+      - api-rich
+    environment:
+      DRSEC_RICH_BASE_URL: http://api-rich:5000
+      DRSEC_RICH_OUTPUT_DIR: /app/data/rich_worker_events
+      DRSEC_RICH_DATA_DIR: /app/data/rich
+      DRSEC_RICH_RUN_ID: ${DRSEC_RICH_RUN_ID:-run_rich}
+      DRSEC_RICH_ROLE: background_worker
+      DRSEC_RICH_DURATION_SECONDS: ${DRSEC_RICH_DURATION_SECONDS:-1800}
+      DRSEC_RICH_WORKER_MODE: jobs
+    command:
+      - python
+      - /app/rich_client.py
+      - --role
+      - background_worker
+      - --worker-mode
+      - jobs
+    volumes:
+      - ${DRSEC_RICH_APP_DATA:-../data/benign_corpus_v4/service_data}:/app/data
+    networks:
+      - drsec-net
+
+  metrics-sink-rich:
+    image: python:alpine
+    container_name: drsec-metrics-sink-rich
+    profiles: ["benign-rich"]
+    environment:
+      DRSEC_METRICS_DIR: /metrics
+    command:
+      - python
+      - -c
+      - |
+        import json, os, time
+        from http.server import BaseHTTPRequestHandler, HTTPServer
+        metrics_dir = os.environ.get("DRSEC_METRICS_DIR", "/metrics")
+        os.makedirs(metrics_dir, exist_ok=True)
+        class Handler(BaseHTTPRequestHandler):
+            def do_POST(self):
+                length = int(self.headers.get("Content-Length", "0") or "0")
+                body = self.rfile.read(length).decode("utf-8", "ignore")
+                payload = {
+                    "ts": int(time.time()),
+                    "path": self.path,
+                    "run_id": self.headers.get("X-DRSEC-Run-ID", ""),
+                    "actor": self.headers.get("X-DRSEC-Actor", ""),
+                    "action": self.headers.get("X-DRSEC-Action", ""),
+                    "request_id": self.headers.get("X-DRSEC-Request-ID", ""),
+                    "body": body,
+                }
+                out = os.path.join(metrics_dir, f"{payload['run_id']}_{payload['actor']}_{payload['action']}_{payload['request_id']}.jsonl")
+                with open(out, "a", encoding="utf-8") as f:
+                    f.write(json.dumps(payload, sort_keys=True) + "\n")
+                self.send_response(200)
+                self.send_header("Content-Type", "application/json")
+                self.end_headers()
+                self.wfile.write(b'{"status":"ok"}')
+            def log_message(self, fmt, *args):
+                print(fmt % args, flush=True)
+        HTTPServer(("0.0.0.0", 9100), Handler).serve_forever()
+    volumes:
+      - ${DRSEC_RICH_METRICS_DATA:-../data/benign_corpus_v4/metrics_data}:/metrics
+    networks:
+      - drsec-net
+
+  vuln-app-dsock:
+    image: deploy-vuln-app:latest
+    container_name: drsec-target-dsock
+    profiles: ["attack"]
+    ports:
+      - "127.0.0.1:5001:5000"
+    volumes:
+      - ./vuln_app/app.py:/app/app.py:ro
+      - drsec-app-data-dsock:/app/data
+      - /var/run/docker.sock:/var/run/docker.sock
+    networks:
+      - drsec-net
+
+  c2-listener:
+    image: deploy-vuln-app:latest
+    container_name: drsec-c2
+    profiles: ["attack"]
+    depends_on:
+      - vuln-app
+    command:
+      - python
+      - -c
+      - |
+        import http.server, json, os, sys
+        os.makedirs("/app/data/c2", exist_ok=True)
+        class C2Handler(http.server.BaseHTTPRequestHandler):
+            def do_GET(self):
+                if self.path == "/payloads/stager.sh":
+                    body = b"#!/bin/sh\necho 'eblit_stager_executed' > /tmp/eblit_marker.txt\n"
+                    self.send_response(200)
+                    self.send_header("Content-Type","text/x-shellscript")
+                    self.end_headers()
+                    self.wfile.write(body)
+                elif self.path.startswith("/beacon"):
+                    from urllib.parse import urlparse, parse_qs
+                    qs = parse_qs(urlparse(self.path).query)
+                    bid = qs.get("id",["unknown"])[0]
+                    print(f"beacon id={bid}", flush=True)
+                    self.send_response(200)
+                    self.send_header("Content-Type","text/plain")
+                    self.end_headers()
+                    self.wfile.write(b"ok")
+                else:
+                    self.send_response(404)
+                    self.end_headers()
+            def do_POST(self):
+                if self.path.startswith("/upload"):
+                    from urllib.parse import urlparse, parse_qs
+                    qs = parse_qs(urlparse(self.path).query)
+                    name = qs.get("name",["unnamed"])[0]
+                    length = int(self.headers.get("Content-Length",0))
+                    data = self.rfile.read(length) if length > 0 else b""
+                    path = os.path.join("/app/data/c2", name)
+                    with open(path,"wb") as f:
+                        f.write(data)
+                    print(f"upload name={name} size={len(data)}", flush=True)
+                    self.send_response(200)
+                    self.send_header("Content-Type","text/plain")
+                    self.end_headers()
+                    self.wfile.write(b"ok")
+                else:
+                    self.send_response(404)
+                    self.end_headers()
+            def log_message(self, fmt, *args):
+                print(f"[c2] {fmt % args}", flush=True)
+        http.server.HTTPServer(("0.0.0.0",4444), C2Handler).serve_forever()
+    volumes:
+      - drsec-c2-data:/app/data/c2
+    networks:
+      - drsec-net
+
+networks:
+  drsec-net:
+    name: drsec-net
+    driver: bridge
+
+volumes:
+  drsec-app-data:
+  drsec-app-data-dsock:
+  drsec-c2-data:

@@ -1,0 +1,80 @@
+{
+  "created_at": "2026-05-26T06:13:22Z",
+  "dataset": "benign_corpus_v3",
+  "errors": [],
+  "sampled_train_quality_checks": {
+    "active_or_burst_fraction": 0.0,
+    "contains_empty_windows": false,
+    "idle_fraction": 0.0,
+    "min_train_windows_satisfied": false
+  },
+  "splits": {
+    "calibration": {
+      "activity_level_counts_full": {
+        "active": 0,
+        "burst": 0,
+        "empty": 0,
+        "idle": 0,
+        "low_activity": 0
+      },
+      "edge_count_total": 0,
+      "full_window_count": 0,
+      "node_count_total": 0,
+      "per_profile_counts": {},
+      "per_role_counts": {},
+      "per_run_counts": {},
+      "raw_event_count_total": 0,
+      "request_count_total": 0
+    },
+    "holdout": {
+      "activity_level_counts_full": {
+        "active": 0,
+        "burst": 0,
+        "empty": 0,
+        "idle": 0,
+        "low_activity": 0
+      },
+      "edge_count_total": 0,
+      "full_window_count": 0,
+      "node_count_total": 0,
+      "per_profile_counts": {},
+      "per_role_counts": {},
+      "per_run_counts": {},
+      "raw_event_count_total": 0,
+      "request_count_total": 0
+    },
+    "train": {
+      "activity_level_counts_full": {
+        "active": 0,
+        "burst": 0,
+        "empty": 0,
+        "idle": 0,
+        "low_activity": 0
+      },
+      "activity_level_counts_sampled": {
+        "active": 0,
+        "burst": 0,
+        "empty": 0,
+        "idle": 0,
+        "low_activity": 0
+      },
+      "edge_count_total": 0,
+      "full_window_count": 0,
+      "node_count_total": 0,
+      "per_profile_counts": {},
+      "per_role_counts": {},
+      "per_run_counts": {},
+      "raw_event_count_total": 0,
+      "request_count_total": 0,
+      "sampled_window_count": 0
+    }
+  },
+  "total_full_windows": 0,
+  "total_sampled_train_windows": 0,
+  "warnings": [
+    "sampled_train_below_min_train_windows:0<100",
+    "split_dir_missing:calibration",
+    "split_dir_missing:holdout",
+    "split_dir_missing:train"
+  ]
+}
