@@ -73,6 +73,7 @@ echo ""
   --window-mode sliding \
   --window-seconds 1800 \
   --stride-seconds 600 \
+  --two-stage \
   --poll-interval 0.2 \
   --persist-windows-dir "${ROOT_DIR}/data/processed/realtime_windows" \
   --debug-dump-dir "${ROOT_DIR}/data/processed/realtime_debug" \

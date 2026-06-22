@@ -1,4 +1,5 @@
 import json
+from pathlib import Path
 
 from src.process.log_parser import TraceeLogParser
 
@@ -48,3 +49,10 @@ def test_tracee_table_line_is_rejected(tmp_path) -> None:
     assert stats["trace_lines_total"] == 2
     assert stats["trace_lines_non_json"] == 2
     assert stats["trace_lines_failed"] == 2
+
+
+def test_tracee_cmd_script_uses_json_output() -> None:
+    script = Path(__file__).resolve().parents[1] / "tracee_cmd.sh"
+    text = script.read_text(encoding="utf-8")
+    assert "--output json" in text
+    assert "--output table" not in text

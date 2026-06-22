@@ -21,6 +21,6 @@ docker run \
   --scope container \
   --scope comm!=tracee \
   --events '*' \
-  --output table \
+  --output json \
   --output option:parse-arguments \
   > "${TRACE_OUT}" 2>&1 &

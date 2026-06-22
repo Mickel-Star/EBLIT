@@ -119,6 +119,7 @@ timeout "$((DEMO_SECONDS + 240))"s "${ROOT_DIR}/.venv/bin/python" -m src.process
   --window-mode sliding \
   --window-seconds "${WINDOW_SECONDS}" \
   --stride-seconds "${STRIDE_SECONDS}" \
+  --two-stage \
   --poll-interval "${POLL_INTERVAL}" \
   --start-from-begin \
   --persist-windows-dir "${ROOT_DIR}/data/processed/realtime_windows" \

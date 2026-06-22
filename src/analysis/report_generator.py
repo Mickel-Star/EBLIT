@@ -12,6 +12,11 @@ from types import SimpleNamespace
 from typing import Dict, Any, List, Optional
 
 from src.analysis.llm_client import get_llm_client, MockLLMClient
+from src.analysis.attack_investigator import (
+    AttackInvestigationConfig,
+    LocalAttackVectorStore,
+    generate_attack_report as generate_attack_report_pipeline,
+)
 from src.common.defaults import (
     DEFAULT_ALERT_THRESHOLD,
     DEFAULT_DETECT_STRIDE_SECONDS,
@@ -23,8 +28,14 @@ from src.knowledge.logic_graph_builder import LogicGraphBuilder
 from src.knowledge.benign_behavior_kb import BenignBehaviorKnowledgeBase
 from src.knowledge.kb_paths import KB_PATHS
 from src.process.provenance_model import ProvenanceEventMapper, RarePathSelector
-from src.process.vector_db import VectorDatabase
-from src.process.vectorizer import TraceeVectorizer
+try:
+    from src.process.vector_db import VectorDatabase
+except Exception:  # pragma: no cover - optional dependency
+    VectorDatabase = None  # type: ignore[assignment]
+try:
+    from src.process.vectorizer import TraceeVectorizer
+except Exception:  # pragma: no cover - optional dependency
+    TraceeVectorizer = None  # type: ignore[assignment]
 from src.process.streaming_reduction import iter_reduced_edges, iter_window_graphs
 from src.process.window_io import dump_window_graph, load_window_graph
 import networkx as nx
@@ -83,6 +94,7 @@ class AnalysisEngine:
         self.tik_db = None
         self.tik_vectorizer = None
         self.case_db = None
+        self.attack_vector_store = None
         self.logic_builder = None
 
         if enable_enrichment:
@@ -97,21 +109,33 @@ class AnalysisEngine:
 
         if self.tik_vectorizer is None:
             try:
+                if TraceeVectorizer is None:
+                    raise RuntimeError("tracee_vectorizer_dependency_unavailable")
                 self.tik_vectorizer = TraceeVectorizer()
             except Exception:
                 self.tik_vectorizer = None
 
         if self.tik_db is None:
             try:
+                if VectorDatabase is None:
+                    raise RuntimeError("vector_db_dependency_unavailable")
                 self.tik_db = VectorDatabase(db_path=KB_PATHS.tik_db_dir, collection_name="tik_knowledge")
             except Exception:
                 self.tik_db = None
 
         if self.case_db is None:
             try:
+                if VectorDatabase is None:
+                    raise RuntimeError("vector_db_dependency_unavailable")
                 self.case_db = VectorDatabase(db_path=KB_PATHS.tik_db_dir, collection_name="case_memory")
             except Exception:
                 self.case_db = None
+
+        if self.attack_vector_store is None:
+            try:
+                self.attack_vector_store = LocalAttackVectorStore(db_path=KB_PATHS.tik_db_dir)
+            except Exception:
+                self.attack_vector_store = None
 
         if self.logic_builder is not None:
             return
@@ -275,6 +299,29 @@ class AnalysisEngine:
             dump_dir=dump_dir,
             return_debug=return_debug,
             max_attack_graph_edges_print=max_attack_graph_edges_print,
+        )
+
+    def generate_attack_report(
+        self,
+        graph: nx.MultiDiGraph,
+        attack_subgraphs: List[Dict[str, Any]] | None,
+        *,
+        llm_enabled: bool = True,
+        config: Dict[str, Any] | None = None,
+    ) -> Dict[str, Any]:
+        self._ensure_enrichment()
+        llm_client = self.llm_client if bool(llm_enabled) else MockLLMClient()
+        cfg = AttackInvestigationConfig(enabled_llm=bool(llm_enabled))
+        if isinstance(config, dict):
+            merged = cfg.__dict__.copy()
+            merged.update(config)
+            cfg = AttackInvestigationConfig(**merged)
+        return generate_attack_report_pipeline(
+            graph,
+            attack_subgraphs or [],
+            llm_client,
+            self.attack_vector_store,
+            cfg,
         )
 
     def _extract_entities_from_text(self, text: str) -> Dict[str, List[str]]:
@@ -1135,10 +1182,42 @@ INSTRUCTIONS:
             for idx in adapter.process_node_indices
         }
 
-    def _gmae_process_scores(self, g: nx.MultiDiGraph) -> Dict[str, float]:
+    def _resolve_gmae_threshold(self, calibration: Dict[str, Any] | None, default_quantile: float = 0.95) -> tuple[float, str]:
+        if not isinstance(calibration, dict):
+            return 0.5, "default"
+        if str(calibration.get("type") or "") != "empirical_cdf":
+            return 0.5, "default"
+        policy = str(calibration.get("policy") or "").strip().lower()
+        if policy == "p99":
+            return 0.99, "calibration_policy"
+        if policy == "p95":
+            return 0.95, "calibration_policy"
+        try:
+            quantile = float(default_quantile)
+        except (TypeError, ValueError):
+            quantile = 0.95
+        quantile = max(0.0, min(1.0, quantile))
+        return float(quantile), "calibration_quantile"
+
+    def score_process_node_results(
+        self,
+        g: nx.MultiDiGraph,
+        *,
+        threshold: float = 0.5,
+        threshold_quantile: float = 0.95,
+        max_anomalous_nodes: int = 20,
+    ) -> Dict[str, Any]:
         runtime = self.gmae_runtime
         if runtime is None:
-            return {}
+            return {
+                "node_results": [],
+                "scores": {},
+                "raw_errors": {},
+                "threshold": float(threshold),
+                "threshold_source": "default",
+                "supported_node_types": ["process"],
+                "warning": "gmae_runtime_unavailable",
+            }
         try:
             from src.process.dgl_adapter import window_to_dgl_graph
 
@@ -1149,40 +1228,93 @@ INSTRUCTIONS:
                 device=runtime["device"],
                 feature_profile=str(runtime.get("feature_profile") or runtime["config"].get("feature_profile") or "legacy"),
             )
-            if int(adapter.graph.ndata["attr"].shape[1]) != int(runtime["config"].get("n_dim", 64)):
-                raise RuntimeError(
-                    f"node_feature_dim_mismatch:model={int(runtime['config'].get('n_dim', 64))}:graph={int(adapter.graph.ndata['attr'].shape[1])}"
-                )
-            if int(adapter.graph.edata["attr"].shape[1]) != int(runtime["config"].get("e_dim", 16)):
-                raise RuntimeError(
-                    f"edge_feature_dim_mismatch:model={int(runtime['config'].get('e_dim', 16))}:graph={int(adapter.graph.edata['attr'].shape[1])}"
-                )
-            if int(adapter.graph.num_nodes()) == 0:
-                return {}
-            if not adapter.process_node_indices:
-                return {}
-
-            calibration = runtime.get("process_error_calibration")
-            if calibration:
-                torch = runtime["torch"]
-                with torch.no_grad():
-                    node_errors = runtime["model"].compute_node_reconstruction_errors(
-                        adapter.graph,
-                        node_indices=adapter.process_node_indices,
-                    )
-                raw_scores = {
-                    adapter.idx_to_node_id[idx]: float(node_errors[idx].detach().cpu().item())
-                    for idx in adapter.process_node_indices
+            if int(adapter.graph.num_nodes()) == 0 or not adapter.process_node_indices:
+                return {
+                    "node_results": [],
+                    "scores": {},
+                    "raw_errors": {},
+                    "threshold": float(threshold),
+                    "threshold_source": "default",
+                    "supported_node_types": ["process"],
+                    "warning": "",
                 }
-                calibrated = self._apply_process_error_calibration(raw_scores, calibration)
-                if calibrated:
-                    return calibrated
 
-            return self._legacy_gmae_process_scores(adapter, runtime)
+            torch = runtime["torch"]
+            with torch.no_grad():
+                node_errors = runtime["model"].compute_node_reconstruction_errors(
+                    adapter.graph,
+                    node_indices=adapter.process_node_indices,
+                )
+            raw_errors = {
+                adapter.idx_to_node_id[idx]: float(node_errors[idx].detach().cpu().item())
+                for idx in adapter.process_node_indices
+            }
+            calibration = runtime.get("process_error_calibration")
+            scores = self._apply_process_error_calibration(raw_errors, calibration)
+            threshold_value = float(threshold)
+            threshold_source = "default"
+            warning = ""
+            if scores:
+                threshold_value, threshold_source = self._resolve_gmae_threshold(calibration, threshold_quantile)
+            else:
+                scores = self._normalize_node_scores(raw_errors)
+                warning = "missing_gmae_calibration_threshold: using default node threshold"
+
+            ranked = sorted(scores.items(), key=lambda item: (float(item[1]), str(item[0])), reverse=True)
+            anomalous_budget = max(int(max_anomalous_nodes), 0)
+            kept = 0
+            node_results = []
+            for rank, (node_id, score) in enumerate(ranked, start=1):
+                if node_id not in g:
+                    continue
+                meta = dict(g.nodes[node_id].get("meta", {}) or {})
+                is_anomalous = bool(float(score) >= float(threshold_value))
+                if is_anomalous and anomalous_budget > 0 and kept >= anomalous_budget:
+                    is_anomalous = False
+                if is_anomalous:
+                    kept += 1
+                node_results.append(
+                    {
+                        "node_id": str(node_id),
+                        "node_type": "process",
+                        "display_name": self._process_display_name(meta),
+                        "gmae_score": float(score),
+                        "gmae_raw_error": float(raw_errors.get(node_id)) if node_id in raw_errors else None,
+                        "gmae_threshold": float(threshold_value),
+                        "is_anomalous": bool(is_anomalous),
+                        "rank": int(rank),
+                        "evidence": {
+                            "pid": meta.get("pid"),
+                            "container_id": str(meta.get("container_id") or ""),
+                            "pathname": meta.get("pathname") or "",
+                            "process_name": self._process_display_name(meta),
+                        },
+                    }
+                )
+            return {
+                "node_results": node_results,
+                "scores": {str(item["node_id"]): float(item["gmae_score"]) for item in node_results},
+                "raw_errors": raw_errors,
+                "threshold": float(threshold_value),
+                "threshold_source": str(threshold_source),
+                "supported_node_types": ["process"],
+                "warning": str(warning or ""),
+            }
         except Exception as exc:
             print(f"Warning: GMAE scoring failed, falling back to statistical rarity score: {exc}")
             self.gmae_runtime = None
-            return {}
+            return {
+                "node_results": [],
+                "scores": {},
+                "raw_errors": {},
+                "threshold": float(threshold),
+                "threshold_source": "default",
+                "supported_node_types": ["process"],
+                "warning": f"gmae_scoring_failed:{type(exc).__name__}: {exc}",
+            }
+
+    def _gmae_process_scores(self, g: nx.MultiDiGraph) -> Dict[str, float]:
+        return dict(self.score_process_node_results(g).get("scores") or {})
 
     def score_process_nodes(self, g: nx.MultiDiGraph) -> Dict[str, float]:
         """Return GMAE process-node scores only.

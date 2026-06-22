@@ -19,6 +19,9 @@ from src.common.defaults import (
     DEFAULT_ALERT_THRESHOLD,
     DEFAULT_BBK_TRAIN_WINDOW_SECONDS,
     DEFAULT_DETECT_STRIDE_SECONDS,
+    DEFAULT_GMAE_NODE_THRESHOLD,
+    DEFAULT_GMAE_THRESHOLD_QUANTILE,
+    DEFAULT_MAX_ANOMALOUS_NODES,
     DEFAULT_TIME_BIN_SECONDS,
     DEFAULT_TOP_EVIDENCE_ITEMS,
     DEFAULT_WINDOW_SECONDS,
@@ -96,11 +99,16 @@ def _add_window_args(parser: argparse.ArgumentParser, *, include_mode: bool = Tr
 
 
 def _add_two_stage_args(parser: argparse.ArgumentParser) -> None:
-    parser.add_argument('--two-stage', action='store_true', default=False, help='启用 BBK 窗口级预筛选 -> GMAE 节点级定位')
+    parser.set_defaults(two_stage=True)
+    parser.add_argument('--two-stage', dest='two_stage', action='store_true', help='显式启用 BBK 窗口级预筛选 -> GMAE 节点级定位')
+    parser.add_argument('--no-two-stage', dest='two_stage', action='store_false', help='关闭 two-stage，回退旧逻辑')
     parser.add_argument('--bbk-trigger-threshold', type=float, default=DEFAULT_ALERT_THRESHOLD, help='BBK Stage-1 触发 GMAE 的窗口分数阈值')
     parser.add_argument('--top-k', type=int, default=DEFAULT_TOP_EVIDENCE_ITEMS, help='GMAE Stage-2 输出的 Top-k 异常进程节点数')
     parser.add_argument('--disable-gmae', action='store_true', default=False, help='只运行 BBK Stage-1，不调用 GMAE')
     parser.add_argument('--force-gmae-all-windows', action='store_true', default=False, help='GMAE-only baseline：对所有窗口调用 GMAE')
+    parser.add_argument('--gmae-node-threshold', type=float, default=DEFAULT_GMAE_NODE_THRESHOLD, help='GMAE 节点异常默认阈值（无 calibration 时使用）')
+    parser.add_argument('--gmae-threshold-quantile', type=float, default=DEFAULT_GMAE_THRESHOLD_QUANTILE, help='从 calibration 中取阈值的分位数')
+    parser.add_argument('--max-anomalous-nodes', type=int, default=DEFAULT_MAX_ANOMALOUS_NODES, help='单窗最多保留多少个异常节点')
 
 
 def _validate_window_args(args) -> None:
@@ -112,6 +120,12 @@ def _validate_window_args(args) -> None:
         raise SystemExit("--stride-seconds must be <= --window-seconds when --window-mode=sliding")
     if hasattr(args, "top_k") and int(args.top_k) < 0:
         raise SystemExit("--top-k must be >= 0")
+    if hasattr(args, "max_anomalous_nodes") and int(args.max_anomalous_nodes) < 0:
+        raise SystemExit("--max-anomalous-nodes must be >= 0")
+    if hasattr(args, "gmae_threshold_quantile"):
+        q = float(args.gmae_threshold_quantile)
+        if q <= 0.0 or q > 1.0:
+            raise SystemExit("--gmae-threshold-quantile must be in (0, 1]")
 
 
 def _two_stage_config_from_args(args):
@@ -122,6 +136,9 @@ def _two_stage_config_from_args(args):
         top_k=int(args.top_k),
         disable_gmae=bool(args.disable_gmae),
         force_gmae_all_windows=bool(args.force_gmae_all_windows),
+        gmae_node_threshold=float(getattr(args, "gmae_node_threshold", DEFAULT_GMAE_NODE_THRESHOLD)),
+        gmae_threshold_quantile=float(getattr(args, "gmae_threshold_quantile", DEFAULT_GMAE_THRESHOLD_QUANTILE)),
+        max_anomalous_nodes=int(getattr(args, "max_anomalous_nodes", DEFAULT_MAX_ANOMALOUS_NODES)),
         window_mode=str(getattr(args, "window_mode", "sliding")),
         window_seconds=int(getattr(args, "window_seconds", DEFAULT_WINDOW_SECONDS)),
         stride_seconds=int(getattr(args, "stride_seconds", DEFAULT_DETECT_STRIDE_SECONDS)),
@@ -134,9 +151,9 @@ def _print_two_stage_result(result: dict, prefix: str = "") -> None:
         f"range={result.get('window_start')}..{result.get('window_end')} "
         f"nodes={int(result.get('node_count') or 0)} edges={int(result.get('edge_count') or 0)} "
         f"bbk_score={float(result.get('bbk_score') or 0.0):.3f} "
-        f"threshold={float(result.get('bbk_trigger_threshold') or 0.0):.3f} "
+        f"threshold={float(result.get('bbk_threshold') or result.get('bbk_trigger_threshold') or 0.0):.3f} "
         f"bbk_triggered={bool(result.get('bbk_triggered'))} "
-        f"gmae_triggered={bool(result.get('gmae_triggered'))}"
+        f"gmae_ran={bool(result.get('gmae_ran') or result.get('gmae_triggered'))}"
     )
     reason = result.get("gmae_reason_if_skipped") or result.get("bbk_reason")
     if reason:
@@ -165,6 +182,53 @@ def _write_two_stage_outputs(output_dir: str, results: list[dict], summary: dict
     for item in results:
         window_id = str(item.get("window_id") or "window_unknown")
         write_json(os.path.join(per_window_dir, f"{window_id}.json"), item)
+
+
+def _maybe_attach_attack_report(engine, graph, result: dict, *, llm_enabled: bool = False) -> dict:
+    enriched = dict(result or {})
+    attack_subgraphs = list(enriched.get("anomalous_subgraphs") or [])
+    if not attack_subgraphs:
+        enriched["attack_report"] = {
+            "attack_subgraphs": [],
+            "subgraph_reports": [],
+            "comprehensive_report": "no_attack_report",
+            "enriched_report": "no_attack_report",
+            "iocs_by_subgraph": {},
+            "iocs_by_stage": {},
+            "critical_iocs": {},
+            "ioc_context_subgraphs": [],
+            "validation_warnings": [],
+        }
+        return enriched
+    try:
+        enriched["attack_report"] = engine.generate_attack_report(
+            graph,
+            attack_subgraphs,
+            llm_enabled=bool(llm_enabled),
+        )
+    except Exception as exc:
+        enriched["attack_report"] = {
+            "attack_subgraphs": attack_subgraphs,
+            "subgraph_reports": [],
+            "comprehensive_report": "attack_report_generation_failed",
+            "enriched_report": "attack_report_generation_failed",
+            "iocs_by_subgraph": {},
+            "iocs_by_stage": {},
+            "critical_iocs": {},
+            "ioc_context_subgraphs": [],
+            "validation_warnings": [f"attack_report_generation_failed:{type(exc).__name__}: {exc}"],
+        }
+    return enriched
+
+
+def _two_stage_llm_enabled(args) -> bool:
+    return bool(getattr(args, "with_llm", False)) and not bool(getattr(args, "no_llm", False))
+
+
+def _should_use_two_stage(args) -> bool:
+    if hasattr(args, "two_stage"):
+        return bool(args.two_stage)
+    return True
 
 def main() -> None:
     """主函数"""
@@ -282,7 +346,7 @@ def main() -> None:
         print(f"   阈值: {args.threshold}")
         print(f"   窗口: mode={args.window_mode} window={int(args.window_seconds)}s stride={int(args.stride_seconds)}s")
 
-        if bool(args.two_stage):
+        if _should_use_two_stage(args):
             from src.process.analysis_engine import detect_two_stage_window, summarize_two_stage_results
             from src.process.log_parser import TraceeLogParser
             from src.process.streaming_reduction import iter_window_graphs
@@ -314,6 +378,7 @@ def main() -> None:
                     None if bool(args.disable_gmae) else engine,
                     _two_stage_config_from_args(args),
                 )
+                result = _maybe_attach_attack_report(engine, g, result, llm_enabled=_two_stage_llm_enabled(args))
                 results.append(result)
                 _print_two_stage_result(result)
             summary = summarize_two_stage_results(
@@ -429,7 +494,7 @@ def main() -> None:
     elif args.command == 'replay':
         from src.analysis.report_generator import AnalysisEngine
         engine = AnalysisEngine()
-        if bool(args.two_stage):
+        if _should_use_two_stage(args):
             from src.process.analysis_engine import detect_two_stage_window, summarize_two_stage_results
             from src.process.window_io import load_window_graph
 
@@ -449,6 +514,7 @@ def main() -> None:
                     None if bool(args.disable_gmae) else engine,
                     _two_stage_config_from_args(args),
                 )
+                result = _maybe_attach_attack_report(engine, g, result, llm_enabled=_two_stage_llm_enabled(args))
                 results.append(result)
                 _print_two_stage_result(result)
             summary = summarize_two_stage_results(
@@ -547,7 +613,7 @@ def main() -> None:
             win_path = os.path.join(args.persist_windows_dir, win_name)
             dump_window_graph(win_path, g)
 
-            if bool(args.two_stage):
+            if _should_use_two_stage(args):
                 from src.process.analysis_engine import detect_two_stage_window
 
                 result = detect_two_stage_window(
@@ -557,6 +623,7 @@ def main() -> None:
                     None if bool(args.disable_gmae) else engine,
                     _two_stage_config_from_args(args),
                 )
+                result = _maybe_attach_attack_report(engine, g, result, llm_enabled=_two_stage_llm_enabled(args))
                 two_stage_results.append(result)
                 _print_two_stage_result(result, prefix=f"[window#{window_idx}] ")
                 if int(args.max_windows) > 0 and window_idx >= int(args.max_windows):
@@ -604,7 +671,7 @@ def main() -> None:
             print(report)
             if int(args.max_windows) > 0 and window_idx >= int(args.max_windows):
                 break
-        if bool(args.two_stage):
+        if _should_use_two_stage(args):
             summary = summarize_two_stage_results(
                 two_stage_results,
                 top_k=int(args.top_k),
